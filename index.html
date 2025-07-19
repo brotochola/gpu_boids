@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GPU Boids Simulation</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #0a0a0a;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            font-family: Arial, sans-serif;
+            color: white;
+        }
+
+        canvas {
+            border: 1px solid #333;
+            background: #111;
+        }
+
+        .controls {
+            margin: 20px;
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        label {
+            font-size: 12px;
+            color: #ccc;
+        }
+
+        input[type="range"] {
+            width: 100px;
+        }
+
+        .info {
+            font-size: 12px;
+            color: #888;
+            text-align: center;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>GPU Boids Simulation</h1>
+    <canvas id="canvas" width="1200" height="800"></canvas>
+
+    <div class="controls">
+        <div class="control-group" style="justify-content: center;">
+            <label style="display: flex; align-items: center; gap: 8px;">
+                <input type="checkbox" id="autoAnimate" checked>
+                Auto-Animate Parameters
+            </label>
+        </div>
+        <div class="control-group">
+            <label>Separation</label>
+            <input type="range" id="separation" min="0.1" max="3000.0" step="0.1" value="1.5">
+            <span id="separationValue">1.5</span>
+        </div>
+        <div class="control-group">
+            <label>Alignment</label>
+            <input type="range" id="alignment" min="0.1" max="3000.0" step="0.1" value="1.0">
+            <span id="alignmentValue">1.0</span>
+        </div>
+        <div class="control-group">
+            <label>Cohesion</label>
+            <input type="range" id="cohesion" min="0.1" max="3000.0" step="0.1" value="1.0">
+            <span id="cohesionValue">1.0</span>
+        </div>
+        <div class="control-group">
+            <label>Max Speed</label>
+            <input type="range" id="maxSpeed" min="1" max="5000" step="0.1" value="50">
+            <span id="maxSpeedValue">2.0</span>
+        </div>
+        <div class="control-group">
+            <label>Max Force</label>
+            <input type="range" id="maxForce" min="1" max="1000" step="0.1" value="100.5">
+            <span id="maxForceValue">100.5</span>
+        </div>
+        <div class="control-group">
+            <label>Separation Radius</label>
+            <input type="range" id="separationRadius" min="1" max="200" step="1" value="25">
+            <span id="separationRadiusValue">25</span>
+        </div>
+        <div class="control-group">
+            <label>Alignment Radius</label>
+            <input type="range" id="alignmentRadius" min="1" max="200" step="1" value="50">
+            <span id="alignmentRadiusValue">50</span>
+        </div>
+        <div class="control-group">
+            <label>Cohesion Radius</label>
+            <input type="range" id="cohesionRadius" min="1" max="200" step="1" value="50">
+            <span id="cohesionRadiusValue">50</span>
+        </div>
+        <div class="control-group">
+            <label>Boid Count</label>
+            <input type="range" id="boidCount" min="100" max="50000" step="100" value="10000">
+            <span id="boidCountValue">1000</span>
+        </div>
+    </div>
+
+    <div class="info">
+        GPU-accelerated boids using WebGL2. Adjust parameters to see different flocking behaviors.
+    </div>
+
+    <script>
+        class GPUBoids {
+            constructor(canvas) {
+                this.canvas = canvas;
+                this.gl = canvas.getContext('webgl2');
+
+                if (!this.gl) {
+                    alert('WebGL2 not supported');
+                    return;
+                }
+
+                this.numBoids = 1000;
+                this.params = {
+                    separation: 1.5,
+                    alignment: 1.0,
+                    cohesion: 1.0,
+                    maxSpeed: 2.0,
+                    maxForce: 100.5,
+                    separationRadius: 25.0,
+                    alignmentRadius: 50.0,
+                    cohesionRadius: 50.0
+                };
+                this.currentTime = 0;
+                this.autoAnimate = true;
+
+                this.currentBuffer = 0;
+                this.initialize();
+            }
+
+            async initialize() {
+                await this.init();
+                this.render();
+            }
+
+            async init() {
+                const gl = this.gl;
+
+                this.createBoidData();
+                await Promise.all([
+                    this.initUpdateShader(),
+                    this.initRenderShader()
+                ]);
+                this.setupBuffers();
+            }
+
+            createBoidData() {
+                // Position and velocity data (4 floats per boid)
+                const positions = new Float32Array(this.numBoids * 4);
+                // Color data (3 floats per boid for RGB)
+                const colors = new Float32Array(this.numBoids * 3);
+
+                for (let i = 0; i < this.numBoids; i++) {
+                    const posIdx = i * 4;
+                    positions[posIdx] = Math.random() * this.canvas.width;
+                    positions[posIdx + 1] = Math.random() * this.canvas.height;
+                    positions[posIdx + 2] = (Math.random() - 0.5) * 4;
+                    positions[posIdx + 3] = (Math.random() - 0.5) * 4;
+
+                    const colorIdx = i * 3;
+                    colors[colorIdx] = 0.5 * Math.random();     // R
+                    colors[colorIdx + 1] = Math.random(); // G
+                    colors[colorIdx + 2] = 0.5 + 0.5 * Math.random(); // B
+                }
+
+                this.boidData = positions;
+                this.boidColors = colors;
+            }
+
+            async initUpdateShader() {
+                const gl = this.gl;
+
+                const vertexShaderSource = await fetch('update_shader.glsl').then(response => response.text());
+
+                const fragmentShaderSource = `#version 300 es
+                precision highp float;
+                void main() {
+                    discard;
+                }`;
+
+                this.updateProgram = this.createProgram(vertexShaderSource, fragmentShaderSource, ['vNewPosition']);
+
+                this.updateUniforms = {};
+                const uniforms = ['uSeparation', 'uAlignment', 'uCohesion', 'uMaxSpeed', 'uMaxForce', 'uSeparationRadius',
+                    'uAlignmentRadius', 'uCohesionRadius', 'uCanvasWidth', 'uCanvasHeight',
+                    'uDeltaTime', 'uNumBoids', 'uBoidTexture', 'uTextureSize'];
+
+                uniforms.forEach(name => {
+                    this.updateUniforms[name] = gl.getUniformLocation(this.updateProgram, name);
+                });
+            }
+
+            async initRenderShader() {
+                const gl = this.gl;
+
+                const vertexShaderSource = await fetch('vertex.glsl').then(response => response.text());
+
+                const fragmentShaderSource = `#version 300 es
+                precision highp float;
+                in vec3 vColor;
+                out vec4 fragColor;
+                
+                void main() {
+                    fragColor = vec4(vColor, 1.0);
+                }`;
+
+                this.renderProgram = this.createProgram(vertexShaderSource, fragmentShaderSource);
+                this.renderUniforms = {
+                    projection: gl.getUniformLocation(this.renderProgram, 'uProjection')
+                };
+            }
+
+            createProgram(vertexSource, fragmentSource, transformFeedbackVaryings = null) {
+                const gl = this.gl;
+
+                const vertexShader = this.createShader(gl.VERTEX_SHADER, vertexSource);
+                const fragmentShader = this.createShader(gl.FRAGMENT_SHADER, fragmentSource);
+
+                const program = gl.createProgram();
+                gl.attachShader(program, vertexShader);
+                gl.attachShader(program, fragmentShader);
+
+                if (transformFeedbackVaryings) {
+                    gl.transformFeedbackVaryings(program, transformFeedbackVaryings, gl.INTERLEAVED_ATTRIBS);
+                }
+
+                gl.linkProgram(program);
+
+                if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+                    console.error('Program linking error:', gl.getProgramInfoLog(program));
+                    return null;
+                }
+
+                gl.deleteShader(vertexShader);
+                gl.deleteShader(fragmentShader);
+
+                return program;
+            }
+
+            createShader(type, source) {
+                const gl = this.gl;
+                const shader = gl.createShader(type);
+                gl.shaderSource(shader, source);
+                gl.compileShader(shader);
+
+                if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                    console.error('Shader compilation error:', gl.getShaderInfoLog(shader));
+                    gl.deleteShader(shader);
+                    return null;
+                }
+
+                return shader;
+            }
+
+            setupBuffers() {
+                const gl = this.gl;
+
+                // Create ping-pong buffers for boid data
+                this.boidBuffers = [gl.createBuffer(), gl.createBuffer()];
+
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.boidBuffers[0]);
+                gl.bufferData(gl.ARRAY_BUFFER, this.boidData, gl.DYNAMIC_DRAW);
+
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.boidBuffers[1]);
+                gl.bufferData(gl.ARRAY_BUFFER, this.boidData.byteLength, gl.DYNAMIC_DRAW);
+
+                // Create buffer for colors
+                this.colorBuffer = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.colorBuffer);
+                gl.bufferData(gl.ARRAY_BUFFER, this.boidColors, gl.STATIC_DRAW);
+
+                // Create texture for reading boid data in shaders
+                this.textureSize = Math.ceil(Math.sqrt(this.numBoids));
+
+                this.boidTextures = [gl.createTexture(), gl.createTexture()];
+
+                for (let i = 0; i < 2; i++) {
+                    gl.bindTexture(gl.TEXTURE_2D, this.boidTextures[i]);
+                    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, this.textureSize, this.textureSize, 0, gl.RGBA, gl.FLOAT, null);
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+                }
+
+                // Triangle vertices
+                const triangleVertices = new Float32Array([
+                    1.0, 0.0,
+                    -1.0, -0.5,
+                    -1.0, 0.5
+                ]);
+
+                this.triangleBuffer = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.triangleBuffer);
+                gl.bufferData(gl.ARRAY_BUFFER, triangleVertices, gl.STATIC_DRAW);
+
+                // Create VAOs
+                this.updateVAOs = [gl.createVertexArray(), gl.createVertexArray()];
+                this.renderVAO = gl.createVertexArray();
+
+                for (let i = 0; i < 2; i++) {
+                    gl.bindVertexArray(this.updateVAOs[i]);
+                    gl.bindBuffer(gl.ARRAY_BUFFER, this.boidBuffers[i]);
+                    gl.enableVertexAttribArray(0);
+                    gl.vertexAttribPointer(0, 4, gl.FLOAT, false, 0, 0);
+                }
+
+                // Setup render VAO
+                gl.bindVertexArray(this.renderVAO);
+
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.boidBuffers[0]);
+                gl.enableVertexAttribArray(0);
+                gl.vertexAttribPointer(0, 4, gl.FLOAT, false, 0, 0);
+                gl.vertexAttribDivisor(0, 1);
+
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.triangleBuffer);
+                gl.enableVertexAttribArray(1);
+                gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 0, 0);
+                gl.vertexAttribDivisor(1, 0);
+
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.colorBuffer);
+                gl.enableVertexAttribArray(2);
+                gl.vertexAttribPointer(2, 3, gl.FLOAT, false, 0, 0);
+                gl.vertexAttribDivisor(2, 1);
+
+                // Transform feedback
+                this.transformFeedback = gl.createTransformFeedback();
+
+                // Create projection matrix
+                this.projectionMatrix = new Float32Array([
+                    2.0 / this.canvas.width, 0, 0, 0,
+                    0, -2.0 / this.canvas.height, 0, 0,
+                    0, 0, 1, 0,
+                    -1, 1, 0, 1
+                ]);
+            }
+
+            updateTexture(bufferIndex) {
+                const gl = this.gl;
+
+                // Read data from buffer
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.boidBuffers[bufferIndex]);
+                const data = new Float32Array(this.textureSize * this.textureSize * 4);
+                gl.getBufferSubData(gl.ARRAY_BUFFER, 0, data, 0, this.numBoids * 4);
+
+                // Update texture
+                gl.bindTexture(gl.TEXTURE_2D, this.boidTextures[bufferIndex]);
+                gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.textureSize, this.textureSize, gl.RGBA, gl.FLOAT, data);
+            }
+
+            updateBoids(deltaTime) {
+                const gl = this.gl;
+                if (this.autoAnimate) {
+                    this.updateParamsWithMath();
+                }
+                this.updateTexture(this.currentBuffer);
+
+                const nextBuffer = 1 - this.currentBuffer;
+
+                gl.useProgram(this.updateProgram);
+
+                // Set uniforms
+                gl.uniform1f(this.updateUniforms.uSeparation, this.params.separation);
+                gl.uniform1f(this.updateUniforms.uAlignment, this.params.alignment);
+                gl.uniform1f(this.updateUniforms.uCohesion, this.params.cohesion);
+                gl.uniform1f(this.updateUniforms.uMaxSpeed, this.params.maxSpeed);
+                gl.uniform1f(this.updateUniforms.uMaxForce, this.params.maxForce);
+                gl.uniform1f(this.updateUniforms.uSeparationRadius, this.params.separationRadius);
+                gl.uniform1f(this.updateUniforms.uAlignmentRadius, this.params.alignmentRadius);
+                gl.uniform1f(this.updateUniforms.uCohesionRadius, this.params.cohesionRadius);
+                gl.uniform1f(this.updateUniforms.uCanvasWidth, this.canvas.width);
+                gl.uniform1f(this.updateUniforms.uCanvasHeight, this.canvas.height);
+                gl.uniform1f(this.updateUniforms.uDeltaTime, deltaTime);
+                gl.uniform1i(this.updateUniforms.uNumBoids, this.numBoids);
+                gl.uniform1i(this.updateUniforms.uBoidTexture, 0);
+                gl.uniform2f(this.updateUniforms.uTextureSize, this.textureSize, this.textureSize);
+
+                gl.activeTexture(gl.TEXTURE0);
+                gl.bindTexture(gl.TEXTURE_2D, this.boidTextures[this.currentBuffer]);
+
+                gl.bindVertexArray(this.updateVAOs[this.currentBuffer]);
+
+                gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, this.transformFeedback);
+                gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 0, this.boidBuffers[nextBuffer]);
+
+                gl.enable(gl.RASTERIZER_DISCARD);
+                gl.beginTransformFeedback(gl.POINTS);
+                gl.drawArrays(gl.POINTS, 0, this.numBoids);
+                gl.endTransformFeedback();
+                gl.disable(gl.RASTERIZER_DISCARD);
+
+                gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, null);
+
+                this.currentBuffer = nextBuffer;
+            }
+
+            render() {
+                const gl = this.gl;
+                const currentTime = performance.now() * 0.001;
+                const deltaTime = Math.min(currentTime - (this.lastTime || currentTime), 0.016);
+                this.fps = 1 / deltaTime;
+                this.lastTime = currentTime;
+                this.currentTime = currentTime;
+                this.updateBoids(deltaTime);
+
+                gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+                gl.clearColor(0.02, 0.02, 0.05, 1.0);
+                gl.clear(gl.COLOR_BUFFER_BIT);
+
+                gl.useProgram(this.renderProgram);
+                gl.uniformMatrix4fv(this.renderUniforms.projection, false, this.projectionMatrix);
+
+                // Update render VAO to use current buffer
+                gl.bindVertexArray(this.renderVAO);
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.boidBuffers[this.currentBuffer]);
+                gl.enableVertexAttribArray(0);
+                gl.vertexAttribPointer(0, 4, gl.FLOAT, false, 0, 0);
+                gl.vertexAttribDivisor(0, 1);
+
+                gl.drawArraysInstanced(gl.TRIANGLES, 0, 3, this.numBoids);
+
+                requestAnimationFrame(() => this.render());
+            }
+            updateParamsWithMath() {
+                this.params.separation = Math.abs(Math.sin(this.currentTime * 0.07 + 200) * 100) + 3
+                this.params.alignment = Math.abs(Math.cos(this.currentTime * 0.2 + 456) * 100);
+                this.params.cohesion = Math.abs(Math.sin(this.currentTime * 0.24 + 12) * 100);
+                // this.params.maxSpeed = Math.cos(this.currentTime) * 100 + 10;
+                // this.params.maxForce = Math.sin(this.currentTime) * 100 + 10;
+                this.params.separationRadius = Math.abs(Math.cos(this.currentTime * 0.1) * 100) + 3
+                this.params.alignmentRadius = Math.abs(Math.sin(this.currentTime * 0.3) * 100)
+                this.params.cohesionRadius = Math.abs(Math.cos(this.currentTime * 0.5) * 100)
+
+
+            }
+            updateParams() {
+                this.params.separation = parseFloat(document.getElementById('separation').value);
+                this.params.alignment = parseFloat(document.getElementById('alignment').value);
+                this.params.cohesion = parseFloat(document.getElementById('cohesion').value);
+                this.params.maxSpeed = parseFloat(document.getElementById('maxSpeed').value);
+                this.params.maxForce = parseFloat(document.getElementById('maxForce').value);
+                this.params.separationRadius = parseFloat(document.getElementById('separationRadius').value);
+                this.params.alignmentRadius = parseFloat(document.getElementById('alignmentRadius').value);
+                this.params.cohesionRadius = parseFloat(document.getElementById('cohesionRadius').value);
+
+                const newBoidCount = parseInt(document.getElementById('boidCount').value);
+                if (newBoidCount !== this.numBoids) {
+                    this.numBoids = newBoidCount;
+                    this.createBoidData();
+                    this.setupBuffers();
+                }
+            }
+
+            getBoidPositions() {
+
+                const gl = this.gl;
+
+                // Use getBufferSubData instead since we already have this data in a buffer
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.boidBuffers[this.currentBuffer]);
+                const boidData = new Float32Array(this.numBoids * 4);
+                gl.getBufferSubData(gl.ARRAY_BUFFER, 0, boidData);
+
+                // Convert to array of {x,y} objects
+                const ret = Array.from({ length: this.numBoids }, (_, i) => ({
+                    x: boidData[i * 4],
+                    y: boidData[i * 4 + 1]
+                }));
+
+
+                return ret
+
+
+            }
+        }
+
+        // Initialize the simulation
+        const canvas = document.getElementById('canvas');
+        const boids = new GPUBoids(canvas);
+
+        // Setup controls
+        const controls = ['separation', 'alignment', 'cohesion', 'maxSpeed', 'maxForce', 'separationRadius', 'alignmentRadius', 'cohesionRadius', 'boidCount'];
+        controls.forEach(control => {
+            const slider = document.getElementById(control);
+            const valueSpan = document.getElementById(control + 'Value');
+
+            slider.addEventListener('input', () => {
+                valueSpan.textContent = slider.value;
+                if (boids && boids.gl) boids.updateParams();
+            });
+        });
+
+        // Setup auto-animate checkbox
+        const autoAnimateCheckbox = document.getElementById('autoAnimate');
+        autoAnimateCheckbox.addEventListener('change', () => {
+            if (boids && boids.gl) {
+                boids.autoAnimate = autoAnimateCheckbox.checked;
+                // If turning off auto-animate, update params from sliders
+                if (!autoAnimateCheckbox.checked) {
+                    boids.updateParams();
+                }
+            }
+        });
+
+        // Handle window resize
+        function resizeCanvas() {
+            canvas.width = Math.min(1200, window.innerWidth - 40);
+            canvas.height = Math.min(800, window.innerHeight - 200);
+
+            if (boids && boids.gl) {
+                boids.projectionMatrix = new Float32Array([
+                    2.0 / canvas.width, 0, 0, 0,
+                    0, -2.0 / canvas.height, 0, 0,
+                    0, 0, 1, 0,
+                    -1, 1, 0, 1
+                ]);
+            }
+        }
+
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+    </script>
+</body>
+</html>
