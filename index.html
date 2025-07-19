@@ -80,8 +80,8 @@
         </div>
         <div class="control-group">
             <label>Max Speed</label>
-            <input type="range" id="maxSpeed" min="1" max="5000" step="0.1" value="50">
-            <span id="maxSpeedValue">2.0</span>
+            <input type="range" id="maxSpeed" min="1" max="5000" step="0.1" value="150">
+            <span id="maxSpeedValue">150.0</span>
         </div>
         <div class="control-group">
             <label>Max Force</label>
@@ -125,12 +125,12 @@
                     return;
                 }
 
-                this.numBoids = 1000;
+                this.numBoids = 10000;
                 this.params = {
                     separation: 1.5,
                     alignment: 1.0,
                     cohesion: 1.0,
-                    maxSpeed: 2.0,
+                    maxSpeed: 102.0,
                     maxForce: 100.5,
                     separationRadius: 25.0,
                     alignmentRadius: 50.0,
